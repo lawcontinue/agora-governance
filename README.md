@@ -4,7 +4,7 @@ Multi-Agent 系统的三级治理体系
 
 **版本**: v1.0.0
 **维护者**: T-Mind 🔮
-**论文**: AAMAS 2026 Submission
+**论文**:预备中
 **License**: MIT
 
 ---
@@ -108,14 +108,14 @@ MIT License - 可自由使用、修改、分发
 
 ## 👥 维护者
 
-- **忒弥斯 (T-Mind)** 🔮 - 预见型架构合伙人
-  - 核心使命: "不只在梦中预见，更在现实中执行。预见未来，创造未来。"
+张泽钰，浙江泽大（丽水）律师事务所 专职律师
+  - 联系邮箱：411947628@qq.com
 
 ---
 
 ## 📚 论文
 
-本软件基于 AAMAS 2026 投稿论文《Agora: Multi-Agent Governance System》
+本软件基于 《Agora: Multi-Agent Governance System》（预投稿状态）
 
 ---
 
