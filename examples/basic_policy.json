@@ -1,0 +1,48 @@
+{
+  "p0_patterns": [
+    {
+      "pattern": "rm -rf",
+      "category": "batch_delete",
+      "level": "P0",
+      "use_regex": false
+    },
+    {
+      "pattern": "drop table",
+      "category": "db_delete",
+      "level": "P0",
+      "use_regex": false
+    },
+    {
+      "pattern": "sudo",
+      "category": "privilege_escalation",
+      "level": "P0",
+      "use_regex": false
+    },
+    {
+      "pattern": "docker system prune",
+      "category": "docker_cleanup",
+      "level": "P0",
+      "use_regex": false
+    }
+  ],
+  "p1_patterns": [
+    {
+      "pattern": "git push",
+      "category": "push",
+      "level": "P1",
+      "use_regex": false
+    },
+    {
+      "pattern": "delete",
+      "category": "delete_op",
+      "level": "P1",
+      "use_regex": false
+    },
+    {
+      "pattern": "send",
+      "category": "send_op",
+      "level": "P1",
+      "use_regex": false
+    }
+  ]
+}
