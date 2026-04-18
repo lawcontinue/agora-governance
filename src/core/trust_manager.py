@@ -1,15 +1,15 @@
 """
-渐进式信任管理器（Trust Manager）- 操作信任评分
+Trust Manager - Graduated trust scoring for operations
 
 版本: v1.0
 创建日期: 2026-04-18
 
 
 职责:
-1. 管理操作类别的信任分数
-2. 渐进式信任（前3次确认，之后自动批准）
-3. 24小时自然衰减（trust_score *= 0.8）
-4. 失败/拒绝重置为 0
+1. Manage trust scores per operation category
+2. Graduated trust (first 3 require confirmation, then auto-approve)
+3. 24-hour natural decay (trust_score *= 0.8)
+4. Denial resets to 0
 """
 
 import json
@@ -17,7 +17,8 @@ import time
 import logging
 from pathlib import Path
 from typing import Dict, Optional, Tuple
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
+from typing import ClassVar
 
 
 logger = logging.getLogger(__name__)
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TrustRecord:
-    """信任记录"""
+    """Trust record for a single category."""
     category: str
     trust_score: int = 0
     last_updated: float = 0.0  # timestamp
@@ -33,56 +34,55 @@ class TrustRecord:
     total_denied: int = 0
     total_auto_approved: int = 0
 
-    # 衰减参数（类常量，不参与 asdict 序列化）
-    _DECAY_FACTOR: float = 0.8
-    _DECAY_INTERVAL_SECONDS: float = 86400.0  # 24 小时
-    _AUTO_APPROVE_THRESHOLD: int = 3
+    DECAY_FACTOR: ClassVar[float] = 0.8
+    DECAY_INTERVAL_SECONDS: ClassVar[float] = 86400.0  # 24 hours
+    AUTO_APPROVE_THRESHOLD: ClassVar[int] = 3
 
     def maybe_decay(self):
         """自然衰减（每 24 小时衰减一次）"""
         now = time.time()
-        intervals = int((now - self.last_updated) / self._DECAY_INTERVAL_SECONDS)
+        intervals = int((now - self.last_updated) / self.DECAY_INTERVAL_SECONDS)
         if intervals > 0 and self.trust_score > 0:
-            self.trust_score = max(0, int(self.trust_score * (self._DECAY_FACTOR ** intervals)))
+            self.trust_score = max(0, int(self.trust_score * (self.DECAY_FACTOR ** intervals)))
             self.last_updated = now
             logger.debug(f"Trust decayed for {self.category}: score={self.trust_score}")
 
     def confirm(self) -> int:
-        """人类确认 → 信任 +1"""
+        """Human confirmation -> trust +1"""
         self.maybe_decay()
-        self.trust_score += 1
+        self.trust_score = min(self.trust_score + 1, 10)  # Cap at 10
         self.total_confirmed += 1
         self.last_updated = time.time()
         return self.trust_score
 
     def deny(self):
-        """人类拒绝 → 重置为 0"""
+        """Human denial -> reset to 0"""
         self.trust_score = 0
         self.total_denied += 1
         self.last_updated = time.time()
 
     def record_auto_approve(self):
-        """记录自动批准"""
+        """Record auto-approval"""
         self.total_auto_approved += 1
         self.last_updated = time.time()
 
     @property
     def can_auto_approve(self) -> bool:
-        """是否可以自动批准"""
+        """Whether auto-approval is allowed"""
         self.maybe_decay()
-        return self.trust_score >= self._AUTO_APPROVE_THRESHOLD
+        return self.trust_score >= self.AUTO_APPROVE_THRESHOLD
 
 
 class TrustManager:
     """
-    渐进式信任管理器
+    Graduated trust manager
 
     规则:
-    - 新操作类别: trust_score = 0，需要人类确认
-    - 每次人类确认: trust_score += 1
-    - trust_score >= 3: 可自动批准
-    - 每 24 小时: trust_score *= 0.8（自然衰减）
-    - 人类拒绝: trust_score = 0（重置）
+    - New category: trust_score = 0, requires human confirmation
+    - Each confirmation: trust_score += 1
+    - trust_score >= 3: can auto-approve
+    - Every 24h: trust_score *= 0.8 (natural decay)
+    - Human denial: trust_score = 0 (reset)
     """
 
     def __init__(self, store_path: Optional[str] = None):
@@ -90,7 +90,7 @@ class TrustManager:
         初始化信任管理器
 
         Args:
-            store_path: 可选的持久化路径（JSON）
+            store_path: Optional persistence path (JSON)
         """
         self.logger = logging.getLogger("agora.governance.trust")
         self.records: Dict[str, TrustRecord] = {}
@@ -103,10 +103,10 @@ class TrustManager:
 
     def check_trust(self, category: str) -> Tuple[bool, int]:
         """
-        检查操作类别是否可自动批准
+        Check if category can be auto-approved
 
         Args:
-            category: 操作类别（如 "batch_delete", "force_push"）
+            category: Operation category (e.g. "batch_delete", "force_push")
 
         Returns:
             (can_auto_approve, trust_score)
@@ -119,13 +119,13 @@ class TrustManager:
 
     def confirm(self, category: str) -> int:
         """
-        记录人类确认
+        Record human confirmation
 
         Args:
-            category: 操作类别
+            category: Operation category
 
         Returns:
-            更新后的 trust_score
+            Updated trust_score
         """
         if category not in self.records:
             self.records[category] = TrustRecord(category=category)
@@ -137,10 +137,10 @@ class TrustManager:
 
     def deny(self, category: str):
         """
-        记录人类拒绝（重置信任）
+        Record human denial (reset trust)
 
         Args:
-            category: 操作类别
+            category: Operation category
         """
         if category not in self.records:
             self.records[category] = TrustRecord(category=category)
@@ -150,7 +150,7 @@ class TrustManager:
         self._persist()
 
     def record_auto_approve(self, category: str):
-        """记录自动批准事件"""
+        """Record auto-approval事件"""
         if category not in self.records:
             self.records[category] = TrustRecord(category=category)
 
@@ -158,7 +158,7 @@ class TrustManager:
         self._persist()
 
     def get_stats(self) -> Dict:
-        """获取信任统计"""
+        """Get trust statistics"""
         stats = {}
         for cat, record in self.records.items():
             stats[cat] = {
@@ -171,7 +171,7 @@ class TrustManager:
         return stats
 
     def _persist(self):
-        """持久化到磁盘"""
+        """Persist to disk"""
         if not self.store_path:
             return
         try:
@@ -183,7 +183,7 @@ class TrustManager:
             self.logger.error(f"Failed to persist trust data: {e}")
 
     def _load(self):
-        """从磁盘加载"""
+        """Load from disk"""
         try:
             with open(self.store_path, "r", encoding="utf-8") as f:
                 data = json.load(f)

@@ -1,303 +1,246 @@
 """
-先例数据库模块
+Precedent Store - Historical decision retrieval for governance consistency
 
-版本: v1.0
-创建日期: 2026-03-20
-Author: Agora Governance Contributors
-状态: Phase 2 开发中
-
-功能:
-- 先例存储（JSON 文件）
-- 先例索引（TF-IDF）
-- 先例检索（语义搜索）
+Version: v1.1
+License: Apache-2.0
 """
 
 import json
+import math
 import os
+import re
 from datetime import datetime
-from typing import List, Dict, Optional
-from dataclasses import dataclass, asdict
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
+from typing import List, Dict, Optional, Tuple
+from dataclasses import dataclass, asdict, field
 
 
 @dataclass
 class Precedent:
-    """先例数据结构"""
+    """Precedent data structure."""
 
-    decision_id: str                    # 决策 ID
-    timestamp: str                       # 时间戳
-    task_id: str                         # 任务 ID
-    description: str                     # 任务描述
-    approved: bool                       # 是否批准
-    stage: str                           # 决策阶段
-    reasoning: str                       # 决策理由
-    local_reviews: dict                  # Local Crits 审查结果
-    global_votes: dict | None            # Global Crits 投票结果
-    tmind_decision: dict | None          # T-Mind 决策
-
-    # 先例特定字段
-    precedent: bool = False              # 是否标记为先例
-    precedent_weight: float = 0.0        # 先例权重（0-5）
-    citation_count: int = 0              # 引用次数
-    tags: List[str] = None               # 标签
-    category: str = ""                   # 分类
-
-    def __post_init__(self):
-        if self.tags is None:
-            self.tags = []
+    decision_id: str
+    timestamp: str
+    task_id: str
+    description: str
+    approved: bool
+    stage: str
+    reasoning: str
+    local_reviews: Dict = field(default_factory=dict)
+    global_votes: Optional[Dict] = None
+    tmind_decision: Optional[Dict] = None
+    precedent: bool = False
+    precedent_weight: float = 0.0
+    citation_count: int = 0
+    tags: List[str] = field(default_factory=list)
+    category: str = ""
 
 
-class PrecedentDatabase:
-    """先例数据库"""
+def _tokenize(text: str) -> List[str]:
+    """Simple whitespace + punctuation tokenizer."""
+    text = text.lower()
+    text = re.sub(r"[^\w\s]", " ", text)
+    return text.split()
 
-    def __init__(self, db_path: str = "agora/governance/precedents.jsonl"):
-        """
-        初始化先例数据库
 
-        Args:
-            db_path: 数据库文件路径
-        """
+def _compute_tf(tokens: List[str]) -> Dict[str, float]:
+    """Compute term frequency."""
+    if not tokens:
+        return {}
+    counts: Dict[str, int] = {}
+    for t in tokens:
+        counts[t] = counts.get(t, 0) + 1
+    total = len(tokens)
+    return {t: c / total for t, c in counts.items()}
+
+
+def _compute_idf(docs: List[List[str]]) -> Dict[str, float]:
+    """Compute inverse document frequency (pure Python)."""
+    n = len(docs)
+    if n == 0:
+        return {}
+    df: Dict[str, int] = {}
+    for doc in docs:
+        seen = set(doc)
+        for t in seen:
+            df[t] = df.get(t, 0) + 1
+    return {t: math.log((n + 1) / (c + 1)) + 1 for t, c in df.items()}
+
+
+def _tfidf_vector(tf: Dict[str, float], idf: Dict[str, float]) -> Dict[str, float]:
+    """Compute TF-IDF vector."""
+    return {t: tf.get(t, 0) * idf.get(t, 0) for t in idf}
+
+
+def _cosine_sim(a: Dict[str, float], b: Dict[str, float]) -> float:
+    """Cosine similarity between two sparse vectors."""
+    common = set(a.keys()) & set(b.keys())
+    if not common:
+        return 0.0
+    dot = sum(a[k] * b[k] for k in common)
+    norm_a = math.sqrt(sum(v * v for v in a.values()))
+    norm_b = math.sqrt(sum(v * v for v in b.values()))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+class PrecedentStore:
+    """Precedent storage and retrieval with TF-IDF search."""
+
+    def __init__(self, db_path: str = "precedents.jsonl"):
         self.db_path = db_path
         self.precedents: List[Precedent] = []
-        self.vectorizer: Optional[TfidfVectorizer] = None
-        self.tfidf_matrix: Optional[np.ndarray] = None
+        self._idf: Dict[str, float] = {}
+        self._doc_vectors: List[Dict[str, float]] = []
 
-        # 确保目录存在
         db_dir = os.path.dirname(db_path)
-        if db_dir:  # 只有当目录不为空时才创建
+        if db_dir:
             os.makedirs(db_dir, exist_ok=True)
 
-        # 加载现有先例
-        self.load()
+        self._load()
 
-    def load(self):
-        """从文件加载先例"""
+    def _load(self):
         if not os.path.exists(self.db_path):
             return
-
-        with open(self.db_path, 'r', encoding='utf-8') as f:
+        with open(self.db_path, "r", encoding="utf-8") as f:
             for line in f:
-                if line.strip():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
                     data = json.loads(line)
-                    precedent = Precedent(**data)
-                    self.precedents.append(precedent)
-
-        # 构建索引
+                    self.precedents.append(Precedent(**data))
+                except (json.JSONDecodeError, TypeError):
+                    continue
         self._build_index()
 
-    def save(self):
-        """保存先例到文件"""
-        with open(self.db_path, 'w', encoding='utf-8') as f:
-            for precedent in self.precedents:
-                f.write(json.dumps(asdict(precedent), ensure_ascii=False) + '\n')
-
-    def add(self, precedent: Precedent):
-        """
-        添加先例
-
-        Args:
-            precedent: 先例对象
-        """
-        self.precedents.append(precedent)
-        self._build_index()
-        self.save()
+    def _save(self):
+        with open(self.db_path, "w", encoding="utf-8") as f:
+            for p in self.precedents:
+                f.write(json.dumps(asdict(p), ensure_ascii=False) + "\n")
 
     def _build_index(self):
-        """构建 TF-IDF 索引"""
+        """Build TF-IDF index (pure Python, no sklearn)."""
         if not self.precedents:
+            self._idf = {}
+            self._doc_vectors = []
             return
 
-        # 构建文档（reasoning + tags）
-        documents = [
-            f"{p.reasoning} {' '.join(p.tags)}"
-            for p in self.precedents
-        ]
+        docs = []
+        for p in self.precedents:
+            text = f"{p.reasoning} {' '.join(p.tags)} {p.description}"
+            docs.append(_tokenize(text))
 
-        # 创建 TF-IDF 向量器
-        self.vectorizer = TfidfVectorizer(
-            ngram_range=(1, 3),
-            min_df=1,  # 至少出现在 1 个文档中
-            max_df=1.0  # 出现在所有文档中（避免单文档时的错误）
-        )
+        # Fallback: if fewer than 2 docs, use simple string matching
+        if len(docs) < 2:
+            self._idf = {}
+            self._doc_vectors = []
+            return
 
-        # 构建 TF-IDF 矩阵
-        self.tfidf_matrix = self.vectorizer.fit_transform(documents)
+        self._idf = _compute_idf(docs)
+        self._doc_vectors = [_tfidf_vector(_compute_tf(d), self._idf) for d in docs]
 
-    def search(
-        self,
-        query: str,
-        threshold: float = 0.3,
-        top_k: int = 10
-    ) -> List[Dict]:
-        """
-        语义搜索先例
+    def add(self, precedent: Precedent):
+        self.precedents.append(precedent)
+        self._build_index()
+        self._save()
 
-        Args:
-            query: 查询文本
-            threshold: 相似度阈值（0-1）
-            top_k: 返回前 K 个结果
-
-        Returns:
-            list: 相关先例列表
-        """
-        if not self.precedents or self.tfidf_matrix is None:
+    def search(self, query: str, threshold: float = 0.3, top_k: int = 10) -> List[Dict]:
+        if not self.precedents:
             return []
 
-        # 向量化查询
-        query_vec = self.vectorizer.transform([query])
+        query_tokens = _tokenize(query)
 
-        # 计算相似度
-        similarities = cosine_similarity(query_vec, self.tfidf_matrix)[0]
+        # Fallback for < 2 docs: simple substring matching
+        if not self._idf:
+            results = []
+            query_lower = query.lower()
+            for p in self.precedents:
+                text = f"{p.reasoning} {' '.join(p.tags)} {p.description}".lower()
+                if query_lower in text or any(t in text for t in query_tokens):
+                    results.append({
+                        "precedent": p,
+                        "similarity": 0.5,
+                        "weight": p.precedent_weight,
+                    })
+            results.sort(key=lambda x: x["weight"], reverse=True)
+            return results[:top_k]
 
-        # 过滤和排序
+        # TF-IDF search
+        query_tf = _compute_tf(query_tokens)
+        query_vec = _tfidf_vector(query_tf, self._idf)
+
         results = []
-        for idx, sim in enumerate(similarities):
+        for idx, doc_vec in enumerate(self._doc_vectors):
+            sim = _cosine_sim(query_vec, doc_vec)
             if sim >= threshold:
-                precedent = self.precedents[idx]
                 results.append({
-                    "precedent": precedent,
+                    "precedent": self.precedents[idx],
                     "similarity": float(sim),
-                    "weight": precedent.precedent_weight
+                    "weight": self.precedents[idx].precedent_weight,
                 })
 
-        # 按相似度和权重排序
-        results.sort(
-            key=lambda x: (x["similarity"], x["weight"]),
-            reverse=True
-        )
-
+        results.sort(key=lambda x: (x["similarity"], x["weight"]), reverse=True)
         return results[:top_k]
 
     def get_by_id(self, decision_id: str) -> Optional[Precedent]:
-        """
-        根据 ID 获取先例
-
-        Args:
-            decision_id: 决策 ID
-
-        Returns:
-            Precedent | None: 先例对象
-        """
-        for precedent in self.precedents:
-            if precedent.decision_id == decision_id:
-                return precedent
+        for p in self.precedents:
+            if p.decision_id == decision_id:
+                return p
         return None
 
     def update_weight(self, decision_id: str, weight: float):
-        """
-        更新先例权重
-
-        Args:
-            decision_id: 决策 ID
-            weight: 新权重（0-5）
-        """
-        precedent = self.get_by_id(decision_id)
-        if precedent:
-            precedent.precedent_weight = max(0, min(weight, 5))
-            self.save()
+        p = self.get_by_id(decision_id)
+        if p:
+            p.precedent_weight = max(0, min(weight, 5))
+            self._save()
 
     def increment_citation(self, decision_id: str):
-        """
-        增加引用次数
-
-        Args:
-            decision_id: 决策 ID
-        """
-        precedent = self.get_by_id(decision_id)
-        if precedent:
-            precedent.citation_count += 1
-            # 重新计算权重
-            new_weight = calculate_precedent_weight(precedent)
-            precedent.precedent_weight = new_weight
-            self.save()
+        p = self.get_by_id(decision_id)
+        if p:
+            p.citation_count += 1
+            p.precedent_weight = _calculate_weight(p)
+            self._save()
 
     def mark_as_precedent(self, decision_id: str, weight: float = 1.0):
-        """
-        标记为先例
-
-        Args:
-            decision_id: 决策 ID
-            weight: 初始权重（0-5）
-        """
-        precedent = self.get_by_id(decision_id)
-        if precedent:
-            precedent.precedent = True
-            precedent.precedent_weight = max(0, min(weight, 5))
-            self.save()
+        p = self.get_by_id(decision_id)
+        if p:
+            p.precedent = True
+            p.precedent_weight = max(0, min(weight, 5))
+            self._save()
 
     def get_stats(self) -> Dict:
-        """
-        获取数据库统计信息
-
-        Returns:
-            dict: 统计信息
-        """
         total = len(self.precedents)
         marked = sum(1 for p in self.precedents if p.precedent)
-        super_precedents = sum(
-            1 for p in self.precedents
-            if p.precedent_weight >= 5.0
-        )
-
+        avg_w = sum(p.precedent_weight for p in self.precedents) / total if total else 0
         return {
             "total_precedents": total,
             "marked_precedents": marked,
-            "super_precedents": super_precedents,
-            "avg_weight": np.mean([p.precedent_weight for p in self.precedents]) if total > 0 else 0
+            "avg_weight": round(avg_w, 2),
         }
 
 
-def calculate_precedent_weight(precedent: Precedent) -> float:
-    """
-    计算先例权重（0-5）
-
-    算法:
-    - 如果已标记为先例，直接返回 precedent_weight
-    - 否则，计算基础权重 + 引用奖励 - 时间衰减 + 结果调整
-
-    Args:
-        precedent: 先例对象
-
-    Returns:
-        float: 先例权重（0-5）
-    """
-    # 如果已标记为先例，直接返回设置的权重
+def _calculate_weight(precedent: Precedent) -> float:
+    """Calculate precedent weight (0-5)."""
     if precedent.precedent:
         return float(precedent.precedent_weight)
 
-    base_weight = 1.0
-
-    # 引用次数奖励
+    base = 1.0
     citation_bonus = precedent.citation_count * 0.5
 
-    # 时间衰减（每月-0.1，最多-2）
     try:
         decision_time = datetime.fromisoformat(precedent.timestamp)
-        age_days = (datetime.now() - decision_time).days
-        age_months = age_days / 30
+        age_months = (datetime.now() - decision_time).days / 30
         age_decay = min(age_months * 0.1, 2.0)
-    except:
+    except (ValueError, TypeError):
         age_decay = 0
 
-    # 结果调整
+    outcome_modifier = 1
     if precedent.global_votes:
-        # 有 Global Crits 投票
         approve_count = sum(
             1 for v in precedent.global_votes.values()
-            if v.get("vote") == "approve"
+            if isinstance(v, dict) and v.get("vote") == "approve"
         )
-        if approve_count >= 2:
-            outcome_modifier = 2  # 共识
-        else:
-            outcome_modifier = 0  # 分裂
-    else:
-        # 无 Global Crits 投票
-        outcome_modifier = 1  # Local Crits 维持
+        outcome_modifier = 2 if approve_count >= 2 else 0
 
-    # 计算总权重
-    total_weight = base_weight + citation_bonus - age_decay + outcome_modifier
-
-    # 上限：5.0（超级先例）
-    return max(0, min(total_weight, 5))
+    return max(0, min(base + citation_bonus - age_decay + outcome_modifier, 5))

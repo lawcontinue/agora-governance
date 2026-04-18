@@ -6,10 +6,10 @@
 
 
 
-职责:
-1. 将操作按风险分为 P0/P1/P2 三级
-2. P0 操作 default-deny，P1 allow+审计，P2 allow+轻量日志
-3. P0 模式列表可配置（不硬编码）
+Responsibilities:
+1. Classify operations by risk into P0/P1/P2
+2. P0 default-deny, P1 allow+audit, P2 allow+lightweight log
+3. P0 pattern list is configurable (not hardcoded)
 """
 
 import json
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 class RiskLevel(Enum):
-    """风险等级"""
+    """Risk level"""
     P0 = "P0"  # 高风险：default-deny
     P1 = "P1"  # 中风险：allow + 审计
     P2 = "P2"  # 低风险：allow + 轻量日志
@@ -33,7 +33,7 @@ class RiskLevel(Enum):
 
 @dataclass
 class OperationRisk:
-    """操作风险评定"""
+    """Operation risk assessment"""
     level: RiskLevel
     matched_pattern: Optional[str] = None
     matched_category: Optional[str] = None
@@ -44,7 +44,7 @@ class OperationRisk:
 
 @dataclass
 class RiskPattern:
-    """风险模式定义"""
+    """Risk pattern definition"""
     pattern: str
     category: str
     level: RiskLevel
@@ -55,13 +55,13 @@ class OperationClassifier:
     """
     操作分级器
 
-    职责:
+    Responsibilities:
     1. 根据预定义模式将操作分为 P0/P1/P2
     2. 支持可配置的模式列表
     3. 支持正则和精确匹配
     """
 
-    # 默认 P0 模式（硬编码兜底，可被配置覆盖）
+    # Default P0 patterns (hardcoded fallback, overridable via config)
     DEFAULT_P0_PATTERNS: List[RiskPattern] = [
         RiskPattern("rm -rf", "batch_delete", RiskLevel.P0),
         RiskPattern("rm -r", "batch_delete", RiskLevel.P0),
@@ -76,12 +76,12 @@ class OperationClassifier:
         RiskPattern("docker system prune", "docker_cleanup", RiskLevel.P0),
         RiskPattern("批量删除", "batch_delete", RiskLevel.P0),
         RiskPattern("批量发送", "batch_send", RiskLevel.P0),
-        # 配置文件覆盖（使用正则避免误匹配）
+        # Config file patterns (regex to avoid false matches)
         RiskPattern(r"docker-compose\.yml", "config_override", RiskLevel.P0, use_regex=True),
         RiskPattern(r"(?:^|\s|/)\.env(?:\s|$|/)", "config_override", RiskLevel.P0, use_regex=True),
     ]
 
-    # 默认 P1 模式
+    # Default P1 patterns
     DEFAULT_P1_PATTERNS: List[RiskPattern] = [
         RiskPattern(r"\brm\b\s", "single_delete", RiskLevel.P1, use_regex=True),
         RiskPattern("git push", "push", RiskLevel.P1),
@@ -93,10 +93,10 @@ class OperationClassifier:
 
     def __init__(self, config_path: Optional[str] = None):
         """
-        初始化操作分级器
+        Initialize operation classifier
 
         Args:
-            config_path: 可选的配置文件路径（JSON）
+            config_path: Optional config file path (JSON)
         """
         self.logger = logging.getLogger("agora.governance.classifier")
         self.p0_patterns: List[RiskPattern] = list(self.DEFAULT_P0_PATTERNS)
@@ -112,7 +112,7 @@ class OperationClassifier:
 
     @staticmethod
     def _parse_risk_level(val) -> RiskLevel:
-        """容错解析 RiskLevel（P2-1: 支持 str/enum 输入）"""
+        """Parse RiskLevel with fallback (supports str/enum)"""
         if isinstance(val, RiskLevel):
             return val
         try:
@@ -121,10 +121,10 @@ class OperationClassifier:
             try:
                 return RiskLevel[val]
             except KeyError:
-                return RiskLevel.P2  # 未知等级默认 P2
+                return RiskLevel.P2  # Unknown level defaults to P2
 
     def _load_config(self, config_path: str):
-        """从 JSON 文件加载自定义模式"""
+        """Load custom patterns from JSON file"""
         try:
             path = Path(config_path)
             if not path.exists():
@@ -156,13 +156,13 @@ class OperationClassifier:
 
     def classify(self, decision: Dict) -> OperationRisk:
         """
-        分类操作风险等级
+        Classify operation risk level
 
         Args:
-            decision: 决策对象，需包含 "action" 字段
+            decision: Decision object, must contain "action" field
 
         Returns:
-            OperationRisk: 风险评定结果
+            OperationRisk: Risk assessment result
         """
         action = str(decision.get("action", ""))
         targets = decision.get("targets", [])
@@ -176,7 +176,7 @@ class OperationClassifier:
                 matched_category="batch_operation",
                 default_action="deny",
                 requires_audit=True,
-                reasoning=f"批量操作（{target_count} 个目标）自动升级为 P0",
+                reasoning=f"Batch operation ({target_count} targets) auto-escalated to P0",
             )
 
         action_lower = action.lower()
@@ -200,7 +200,7 @@ class OperationClassifier:
                         matched_category=pattern.category,
                         default_action="allow",
                         requires_audit=True,
-                        reasoning=f"匹配 P1 模式: {pattern.pattern} ({pattern.category})",
+                        reasoning=f"Matched P1 pattern: {pattern.pattern} ({pattern.category})",
                     )
             else:
                 if pattern.pattern.lower() in action_lower:
@@ -210,7 +210,7 @@ class OperationClassifier:
                         matched_category=pattern.category,
                         default_action="allow",
                         requires_audit=True,
-                        reasoning=f"匹配 P1 模式: {pattern.pattern} ({pattern.category})",
+                        reasoning=f"Matched P1 pattern: {pattern.pattern} ({pattern.category})",
                     )
 
         # 默认 P2
@@ -218,22 +218,22 @@ class OperationClassifier:
             level=RiskLevel.P2,
             default_action="allow",
             requires_audit=False,
-            reasoning="无匹配模式，默认 P2（低风险）",
+            reasoning="No matching pattern, default P2 (low risk)",
         )
 
     def _make_risk(self, pattern: RiskPattern) -> OperationRisk:
-        """根据模式生成 P0 风险评定"""
+        """Generate P0 risk assessment from pattern"""
         return OperationRisk(
             level=RiskLevel.P0,
             matched_pattern=pattern.pattern,
             matched_category=pattern.category,
             default_action="deny",
             requires_audit=True,
-            reasoning=f"匹配 P0 模式: {pattern.pattern} ({pattern.category})",
+            reasoning=f"Matched P0 pattern: {pattern.pattern} ({pattern.category})",
         )
 
     def add_pattern(self, pattern: RiskPattern):
-        """动态添加模式"""
+        """Add pattern dynamically"""
         if pattern.level == RiskLevel.P0:
             self.p0_patterns.append(pattern)
         elif pattern.level == RiskLevel.P1:
@@ -241,7 +241,7 @@ class OperationClassifier:
         self.logger.info(f"Added pattern: {pattern.pattern} ({pattern.level.value})")
 
     def remove_pattern(self, pattern_str: str) -> bool:
-        """移除模式"""
+        """Remove pattern"""
         for patterns in [self.p0_patterns, self.p1_patterns]:
             for i, p in enumerate(patterns):
                 if p.pattern == pattern_str:
@@ -251,7 +251,7 @@ class OperationClassifier:
         return False
 
     def list_patterns(self) -> Dict[str, List[Dict]]:
-        """列出所有模式"""
+        """List all patterns"""
         return {
             "P0": [asdict(p) for p in self.p0_patterns],
             "P1": [asdict(p) for p in self.p1_patterns],
